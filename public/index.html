@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>采集台 · Ingest Desk</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <h1>采集台</h1>
+    <span class="sub">local feed · no live market data</span>
+  </div>
+
+  <div class="runmeta" id="runmeta"></div>
+
+  <span class="spacer"></span>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="预设">
+      <button data-preset="steady" aria-pressed="true">平稳</button>
+      <button data-preset="chaos" aria-pressed="false">重连·补取·裁决</button>
+    </div>
+    <button class="btn" id="btn-reset" title="清空三个库并按所选预设重跑">重跑</button>
+    <button class="btn" id="btn-pause">暂停</button>
+    <button class="btn ghost" id="btn-settle" title="立即按规则结算所有可判定冲突">结算</button>
+    <button class="btn ghost" id="btn-reconcile">对账</button>
+  </div>
+</header>
+
+<main>
+  <div id="banner-host"></div>
+
+  <!-- ------------------------------------------------------------- KPI row -->
+  <section class="kpis" aria-label="关键进度">
+    <div class="kpi" id="kpi-received">
+      <div class="label">接收覆盖</div>
+      <div class="value"><span id="kpi-recv-v">—</span><small id="kpi-recv-t"></small></div>
+      <div class="sub" id="kpi-recv-sub"></div>
+      <div class="bar"><i id="kpi-recv-bar" style="width:0%"></i></div>
+    </div>
+    <div class="kpi ok" id="kpi-verified">
+      <div class="label">已验证完整</div>
+      <div class="value" id="kpi-verified-v">—</div>
+      <div class="sub" id="kpi-verified-sub"></div>
+      <div class="bar"><i id="kpi-verified-bar" style="width:0%"></i></div>
+    </div>
+    <div class="kpi" id="kpi-gaps">
+      <div class="label">缺口</div>
+      <div class="value" id="kpi-gaps-v">—</div>
+      <div class="sub" id="kpi-gaps-sub"></div>
+    </div>
+    <div class="kpi" id="kpi-conflicts">
+      <div class="label">冲突组</div>
+      <div class="value" id="kpi-conf-v">—</div>
+      <div class="sub" id="kpi-conf-sub"></div>
+    </div>
+    <div class="kpi ok" id="kpi-landed">
+      <div class="label">落盘已确认</div>
+      <div class="value"><span id="kpi-land-v">—</span><small id="kpi-land-t"></small></div>
+      <div class="sub" id="kpi-land-sub"></div>
+      <div class="bar"><i id="kpi-land-bar" style="width:0%"></i></div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------ pipeline -->
+  <section class="panel" aria-label="流水线">
+    <div class="panel-head">
+      <h2>流水线</h2>
+      <span class="hint">四个独立进程 · 三个独立库 · 状态分开推进</span>
+      <span class="right"><span class="chip" id="chip-reconcile"><span class="dot"></span><span>对账 —</span></span></span>
+    </div>
+    <div class="pipeline" id="pipeline"></div>
+  </section>
+
+  <!-- ------------------------------------------------------ coverage bands -->
+  <section class="panel" aria-label="逐号覆盖">
+    <div class="panel-head">
+      <h2>逐号视图</h2>
+      <span class="hint">同一横轴，三种独立的存储：接收覆盖 · 来源路径 · 落盘进度</span>
+      <span class="right">
+        <div class="legend" id="matrix-legend"></div>
+      </span>
+    </div>
+    <div class="matrix-wrap" id="matrix-wrap"></div>
+    <details class="table-view" id="matrix-tables">
+      <summary>表格视图</summary>
+      <div class="tables" id="matrix-tables-body"></div>
+    </details>
+  </section>
+
+  <!-- --------------------------------------------- completeness + trade-off -->
+  <div class="grid two">
+    <section class="panel" aria-label="完整性判据">
+      <div class="panel-head">
+        <h2>何时足以确认完整</h2>
+        <span class="hint">每一项都由不同进程给出，互不代偿</span>
+      </div>
+      <div class="checklist" id="checklist"></div>
+      <div id="verdict-host"></div>
+    </section>
+
+    <section class="panel" aria-label="两种重连策略">
+      <div class="panel-head">
+        <h2>旧连接处置策略</h2>
+        <span class="hint">延迟与补齐成本的显式取舍</span>
+        <span class="right">
+          <div class="seg" role="group" aria-label="策略">
+            <button data-policy="overlap" aria-pressed="true">重叠 overlap</button>
+            <button data-policy="hold" aria-pressed="false">先停 hold</button>
+          </div>
+        </span>
+      </div>
+      <div class="note-grid" style="grid-template-columns:1fr">
+        <div class="note">
+          <h3>overlap — 让两路短暂重叠</h3>
+          <p>旧连接一降级，新连接立即接管；旧连接迟到补发的尾部内容被当作<b>暂定</b>收下，再用按序号补取确证。接收延迟最低，代价是尾部帧可能带错内容，必须过一次裁决与确证。</p>
+          <p class="kv" id="cost-overlap"></p>
+        </div>
+        <div class="note">
+          <h3>hold — 先停旧连接再补取</h3>
+          <p>先用状态通知把旧连接退休，它随后的尾部帧按身份规则<b>拒收</b>；洞只能靠按序号补取填。没有重叠、没有尾部猜测，代价是补齐成本更高，且这段时间的号一直缺着。</p>
+          <p class="kv" id="cost-hold"></p>
+        </div>
+      </div>
+      <div class="callout" style="margin-top:10px" id="policy-note"></div>
+    </section>
+  </div>
+
+  <!-- ---------------------------------------------------------- ledgers -->
+  <div class="grid half">
+    <section class="panel" aria-label="连接台账">
+      <div class="panel-head">
+        <h2>连接身份台账</h2>
+        <span class="hint">每个 socket 一个 epoch，一个 basis 声明</span>
+      </div>
+      <div class="lines" id="lines"></div>
+      <div class="scroll-y">
+        <table class="tbl" id="conn-table">
+          <thead>
+            <tr><th>连接</th><th>角色</th><th>epoch</th><th>release → global</th><th>覆盖</th><th>帧</th><th>状态</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <details class="table-view">
+        <summary>身份与业务顺序如何分开保存</summary>
+        <div class="note" style="margin-top:8px">
+          <p><code>connections</code> 只存身份：<code>conn_id · epoch · basis_key · 状态</code>。它不知道任何业务进度。</p>
+          <p><code>coverage</code> 只存业务顺序：每个 global 一条，记住是哪一帧、什么等级（firm / tentative）。它不知道帧来自哪条连接的身份语义。</p>
+          <p><code>frames</code> 把两者连起来：一帧同时携带 <code>conn_id + epoch + release</code>。重编号只会改变后者的解释，不会改写已落定的 global。</p>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel" aria-label="补取会话台账">
+      <div class="panel-head">
+        <h2>补取会话台账</h2>
+        <span class="hint">缺口 → 区间会话；会话的“完成”只是声明</span>
+      </div>
+      <div class="scroll-y" style="max-height:310px">
+        <table class="tbl" id="session-table">
+          <thead>
+            <tr><th>会话</th><th>区间</th><th>轮次</th><th>用途</th><th>帧</th><th>结论</th><th>备注</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="callout" style="margin-top:10px" id="session-note"></div>
+    </section>
+  </div>
+
+  <!-- -------------------------------------------------------------- trace -->
+  <section class="panel" aria-label="单条数据全生命周期">
+    <div class="panel-head">
+      <h2>沿一条数据走完全程</h2>
+      <span class="hint">接收 → 补取 → 裁决 → 落盘，逐号可查</span>
+      <span class="right trace-controls">
+        <div class="trace-jump" id="trace-jump"></div>
+        <label class="sr-only" for="trace-input">序号</label>
+        <input type="number" id="trace-input" min="1" step="1" value="1" />
+        <button class="btn sm" id="trace-go">查看</button>
+        <button class="btn sm ghost" id="trace-follow" aria-pressed="false">跟随最新</button>
+      </span>
+    </div>
+    <div id="trace-host">
+      <div class="callout">输入一个序号，或点击上方矩阵中的任意一格。</div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------ events + reconcile -->
+  <div class="grid two">
+    <section class="panel" aria-label="事件流">
+      <div class="panel-head">
+        <h2>事件流</h2>
+        <span class="hint">源 / 接收 / 补取 / 入库 合并一条时间线</span>
+        <span class="right">
+          <div class="filters" id="event-filters">
+            <button data-actor="all" aria-pressed="true">全部</button>
+            <button data-actor="source" aria-pressed="false">源</button>
+            <button data-actor="receiver" aria-pressed="false">接收</button>
+            <button data-actor="backfiller" aria-pressed="false">补取</button>
+            <button data-actor="lander" aria-pressed="false">入库</button>
+            <button data-actor="desk" aria-pressed="false">操作</button>
+          </div>
+        </span>
+      </div>
+      <div class="events" id="events"></div>
+    </section>
+
+    <section class="panel" aria-label="与源端清单对账">
+      <div class="panel-head">
+        <h2>与源端完整清单对照</h2>
+        <span class="hint">逐号比内容指纹，再比全流指纹</span>
+        <span class="right"><span class="chip" id="chip-rec2"><span class="dot"></span><span>—</span></span></span>
+      </div>
+      <div id="reconcile-host">
+        <div class="callout">尚未对账。</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ------------------------------------------------------------ fault bench -->
+  <section class="panel" aria-label="故障台">
+    <div class="panel-head">
+      <h2>故障台</h2>
+      <span class="hint">全部由页面触发；源端与入库器各自履责</span>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(4,minmax(0,1fr))" id="fault-bench"></div>
+    <div class="callout" style="margin-top:12px" id="fault-note"></div>
+  </section>
+
+  <section class="panel" aria-label="设计与判据说明">
+    <div class="panel-head"><h2>为什么这些数字是分开的</h2></div>
+    <div class="note-grid">
+      <div class="note accent-blue">
+        <h3>三个库，三种失败</h3>
+        <p><b>receiver.db</b> — 连接身份、帧、覆盖、冲突。接收器崩溃只会丢“尚未确认的帧”，不会改写已落定的号。</p>
+        <p><b>backfill.db</b> — 会话台账、已验证过的区间。补取器重启后知道哪些区间已经补过，不会重复付成本。</p>
+        <p><b>lander.db</b> — 批次、落盘行、修订记录。入库器崩溃后靠 <code>staging / committed / acked</code> 三态恢复：未提交的整批回滚，已提交未确认的逐行核对后再确认。</p>
+      </div>
+      <div class="note">
+        <h3>身份与顺序不是一回事</h3>
+        <p>release 只是某条 socket 在某 epoch 上的计数。它能变成 global，只因为源端在该 socket 的 <code>hello</code> 里声明了 basis（<code>releaseStart → globalStart</code>）。</p>
+        <p>没有 basis 的帧一律隔离，绝不猜位置；epoch 对不上也隔离。所以“旧连接还在发”只会污染它自己的编号空间，不会改写新连接的业务顺序。</p>
+      </div>
+      <div class="note">
+        <h3>两种“完整”，不要混用</h3>
+        <p><b>receivedComplete</b> — 每个号都有内容，且游标从 1 连续。<code>tentative</code> 也算有内容。</p>
+        <p><b>verifiedComplete</b> — 每个号都是 firm：没有尾部猜测、没有待裁决冲突。</p>
+        <p>“足以确认完整”还要再加两条：所有行都已 <code>acked</code>，且与源端清单逐号一致、全流指纹一致。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    local fixture · <code>node server/index.mjs</code> · 不连接任何真实行情
+  </footer>
+</main>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

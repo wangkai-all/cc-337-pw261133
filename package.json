@@ -1,0 +1,15 @@
+{
+  "name": "feeddesk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local market-data ingest desk with reconnect/replay, gap backfill, arbitration and durable landing",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
